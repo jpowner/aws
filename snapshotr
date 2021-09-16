@@ -2,8 +2,7 @@ import boto3
 from datetime import datetime, timezone, timedelta
 import re
 
-#regions = ['eu-west-1', 'us-east-1', 'ap-southeast-1']
-regions = ['us-east-1']
+regions = ['eu-west-1', 'us-east-1', 'ap-southeast-1']
 today = datetime.now(timezone.utc)
 todayformatted = today.strftime('%Y-%m-%d')
 yesterday = datetime.now(timezone.utc) - timedelta(days=1)
