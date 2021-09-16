@@ -55,7 +55,7 @@ def snapshotr(ec2, instance):
     for volumeid in volumeidlist:
 
         # Creates and tags a new snapshot
-   #     take_snapshot(ec2, taglistofdict, volumeid)
+        take_snapshot(ec2, taglistofdict, volumeid)
 
         # Gets old snapshots
         oldsnapshotlist = get_snapshots(ec2, volumeid)
