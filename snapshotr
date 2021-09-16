@@ -1,0 +1,162 @@
+import boto3
+from datetime import datetime, timezone, timedelta
+import re
+
+regions = ['eu-west-1', 'us-east-1', 'ap-southeast-1']
+today = datetime.now(timezone.utc)
+todayformatted = today.strftime('%Y-%m-%d')
+yesterday = datetime.now(timezone.utc) - timedelta(days=1)
+snapshotlimit = 14
+
+
+def main():
+    # For every region
+    for region in regions:
+        ec2 = boto3.client('ec2', region_name=region)
+
+        # Get all instances in the region
+        instances = get_instances(ec2)
+
+        # For every instance
+        for reservation in instances['Reservations']:
+            for instance in reservation['Instances']:
+
+                # If instance is running and the root volume is EBS
+                if instance['State']['Name'] == 'running' and instance['RootDeviceType'] == 'ebs':
+                    snapshotr(ec2, instance)
+
+                # If instance is stopped and the root volume is EBS
+                elif instance['State']['Name'] == 'stopped' and instance['RootDeviceType'] == 'ebs':
+                    transitionreason = instance['StateTransitionReason']
+
+                    # Checks transitionreason for a string with digits separated by a dash
+                    datestopped = re.search(r'\d{4}-\d{2}-\d{2}', transitionreason)
+
+                    # If the string with digits separated by a dash was found
+                    if datestopped:
+
+                        # Convert datestopped from a string to a date object
+                        dateobj = datetime.strptime(datestopped.group(), '%Y-%m-%d').date()
+
+                        # Take a snapshot if the instance was stopped in the past 24 hours
+                        if dateobj >= yesterday.date():
+                            snapshotr(ec2, instance)
+
+
+def snapshotr(ec2, instance):
+
+    # Create new tags from instance metadata
+    taglistofdict = get_newtags(instance)
+
+    # Gets a list of volume IDs from instance
+    volumeidlist = get_volumes(instance)
+
+    # For every volume on the instance
+    for volumeid in volumeidlist:
+
+        # Creates and tags a new snapshot
+        take_snapshot(ec2, taglistofdict, volumeid)
+
+        # If there are more than 14 snapshots the oldest snapshot will be retrieved by get_snapshots
+        while oldestsnapshot := get_snapshots(ec2, volumeid):
+
+            # Delete oldest snapshot
+            del_snapshot(ec2, oldestsnapshot)
+
+
+def get_instances(ec2):
+    instances = ec2.describe_instances()
+
+    return instances
+
+
+def get_newtags(instance):
+    tagdict = {}
+    taglistofdict = []
+
+    # Assign variables from instance metadata
+    tagdict['Instance-Id'] = instance['InstanceId']
+    tagdict['Type'] = instance['InstanceType']
+    tagdict['Name'] = 'NONE'
+    tagdict['Account'] = 'NONE'
+    tagdict['Owner'] = 'NONE'
+    for tag in instance['Tags']:
+        if tag['Key'] == 'Name':
+            tagdict['Name'] = tag['Value']
+        elif tag['Key'] == 'Account':
+            tagdict['Account'] = tag['Value']
+        elif tag['Key'] == 'Owner':
+            tagdict['Owner'] = tag['Value']
+
+    for key, value in tagdict.items():
+        taglistofdict.append(
+            {
+                'Key': key,
+                'Value': value
+            },
+        )
+
+    return taglistofdict
+
+
+def get_volumes(instance):
+    volumeidlist = []
+    if instance['BlockDeviceMappings']:
+        for volume in instance['BlockDeviceMappings']:
+            if volume['Ebs']:
+                volumeid = volume['Ebs']['VolumeId']
+                volumeidlist.append(volumeid)
+
+    return volumeidlist
+
+
+def take_snapshot(ec2, taglistofdict, volumeid):
+    takesnapshot = ec2.create_snapshot(
+        Description=f'Backup {today}',
+        VolumeId=volumeid,
+        TagSpecifications=[
+            {
+                'ResourceType': 'snapshot',
+                'Tags': taglistofdict
+            },
+        ],
+        DryRun=True
+    )
+
+
+def get_snapshots(ec2, volumeid):
+    snapshots = ec2.describe_snapshots(
+        Filters=[
+            {
+                'Name': 'volume-id',
+                'Values': [
+                    volumeid,
+                ]
+            },
+        ],
+    )
+
+    # Create a list of all snapshots
+    snapshotlist = snapshots['Snapshots']
+
+    # Count the number of snapshots
+    snapshotcount = len(snapshotlist)
+
+    # If there are more snapshots than snapshotlimit
+    if snapshotcount > snapshotlimit:
+
+        # Find the oldest snapshot
+        oldestsnap = min(snapshotlist, key=lambda x: x['StartTime'])
+        return oldestsnap['SnapshotId']
+
+
+def del_snapshot(ec2, snapshotid):
+    deletesnapshot = ec2.delete_snapshot(
+        SnapshotId=snapshotid,
+        DryRun=True
+    )
+
+
+if __name__ == "__main__":
+    main()
+
